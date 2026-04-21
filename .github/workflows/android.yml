@@ -38,6 +38,10 @@ jobs:
     - name: Install Rust Android targets
       run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+          python-version: '3.12'
     # Skip the connected checks in the CI script, as they require an emulator setup.
     - name: Run CI script
       run: ./ci-android.sh --skip-connected-check

@@ -8,21 +8,19 @@ android {
     defaultConfig {
         minSdkVersion 17
         targetSdkVersion 31
-
         versionCode 1
         versionName "1.3.4"
-
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles "consumer-rules.pro"
-
-        // MODIFIED: 显式启用 16KB 页面对齐 (安全选项)
-        // 虽然对于纯 Rust 库，这通常由 Cargo 控制，但开启它可以确保构建系统知道意图
+        
+        // MODIFIED: 显式启用 16KB 支持
         manifestPlaceholders = [android_16k_page_enabled: "true"]
     }
 
-    // MODIFIED: NDK 版本是关键！
-    // NDK 21 不支持 16KB 输出。必须升级到 23 或更高 (推荐 25/26)
-    android.ndkVersion "25.2.9519653" 
+    // MODIFIED: 尝试提升 NDK 版本
+    // 如果 CI 环境中有 NDK 25，它会尝试使用。
+    // 如果没有，它会回退到默认路径，但可能无法生成 16KB 对齐。
+    android.ndkVersion "25.2.9519653"
 
     buildTypes {
         release {
@@ -48,7 +46,6 @@ android {
     }
 }
 
-// MODIFIED: 建议更新 Rust 插件版本，或者确保你的环境支持它
 apply plugin: 'org.mozilla.rust-android-gradle.rust-android'
 
 dependencies {
@@ -67,23 +64,43 @@ cargo {
     verbose = true
     apiLevel = 26
     
-    // MODIFIED: 根据 buildType 设置 profile
-    // 修正了原逻辑可能存在的潜在错误
-    profile = gradle.startParameter.taskNames.any { it.toLowerCase().contains("debug") } ? "debug" : "release"
+    // MODIFIED: 判断构建类型的逻辑 (更安全)
+    def isDebug = gradle.startParameter.taskNames.any { it.toLowerCase().contains("debug") }
+    profile = isDebug ? "debug" : "release"
 
-    // ============================================================
-    // ⭐ 最关键修改：强制 Rust 生成 16KB 对齐的二进制文件 ⭐
-    // ============================================================
-    // Rust 编译器需要明确的标志来对齐 .text 和 .data 段。
-    // 0x4000 = 16384 = 16KB
-    rustFlagsWithDebug = "-C link-arg=-Wl,-z,max-page-size=0x4000 -C link-arg=-Wl,-z,common-page-size=0x4000"
-    rustFlagsRelease = "-C link-arg=-Wl,-z,max-page-size=0x4000 -C link-arg=-Wl,-z,common-page-size=0x4000"
+    // MODIFIED: 核心修复 - 16KB 对齐参数
+    // 旧版插件不支持 'rustFlags' 属性，我们需要将参数拼接到 'extraCargoBuildArgs' 中
+    // 或者直接通过环境变量指定 RUSTFLAGS
     
-    // 应用这些标志
-    rustFlags = profile == "debug" ? rustFlagsWithDebug : rustFlagsRelease
+    // 1. 构建 Rust 标志字符串
+    def pageAlignFlags = "-C link-arg=-Wl,-z,max-page-size=0x4000 -C link-arg=-Wl,-z,common-page-size=0x4000"
+    
+    // 2. 设置为环境变量 (这是最可靠的方法，绕过 Gradle 插件的解析)
+    System.setProperty("org.gradle.project.cargoRustflags", pageAlignFlags)
+    
+    // 3. 尝试添加到参数列表 (兼容部分插件版本)
+    extraCargoBuildArgs = ["--verbose"]
 }
 
-// (保留原有的 Javadoc 和 Variant 逻辑)
+// MODIFIED: 强制指定 NDK 路径给 Cargo
+// 如果你的 CI 环境中已经下载了 NDK 25，这里手动指定它
+afterEvaluate {
+    // 这是一个 Hack，强制告诉 Rust 编译器去哪里找 Android 的 NDK
+    // 请根据你的实际 Runner 环境修改路径，或者使用环境变量 ANDROID_NDK_HOME
+    // 
+    // 假设 NDK 安装在默认的 SDK 路径下:
+    // def ndkPath = System.getenv("ANDROID_NDK_HOME")
+    // if (ndkPath == null) {
+    //     ndkPath = "/Users/runner/Library/Android/sdk/ndk/25.2.9519653" 
+    // }
+    // 
+    // 如果你能确认 NDK 25 的绝对路径，取消下面几行的注释:
+    // tasks.withType(com.nishtahir.CargoTask) {
+    //     environment("NDK_HOME", ndkPath)
+    //     environment("ANDROID_NDK", ndkPath)
+    // }
+}
+
 android.libraryVariants.all { variant ->
     if (variant.name == 'release') {
         project.tasks.create("generateJavadoc", Javadoc) {

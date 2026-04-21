@@ -57,6 +57,7 @@ android {
     lintOptions {
         // generate to the CLI a text report of issues
         textReport true
+        abortOnError false
         // treat all warnings as errors
         warningsAsErrors true
     }

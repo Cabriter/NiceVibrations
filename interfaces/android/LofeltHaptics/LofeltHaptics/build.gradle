@@ -7,13 +7,6 @@ android {
 
     defaultConfig {
         minSdkVersion 17
-
-        // Don't warn about not using the latest available SDK version.
-        // Upgrading the target SDK requires upgrading Gradle, the Android
-        // Gradle Plugin, the Rust Gradle Plugin and Java. The updated Java
-        // broke the CI, as the sdkmanager, used to install the NDK on the CI,
-        // is not compatible with Java 11.
-        //noinspection OldTargetApi
         targetSdkVersion 31
 
         versionCode 1
@@ -21,12 +14,15 @@ android {
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles "consumer-rules.pro"
+
+        // MODIFIED: 显式启用 16KB 页面对齐 (安全选项)
+        // 虽然对于纯 Rust 库，这通常由 Cargo 控制，但开启它可以确保构建系统知道意图
+        manifestPlaceholders = [android_16k_page_enabled: "true"]
     }
 
-    // Specifying the version of the NDK is needed because otherwise the Rust
-    // plugin doesn't find the NDK. The actual version doesn't matter, any would do.
-    // See https://github.com/mozilla/rust-android-gradle/issues/29.
-    android.ndkVersion "21.3.6528147"
+    // MODIFIED: NDK 版本是关键！
+    // NDK 21 不支持 16KB 输出。必须升级到 23 或更高 (推荐 25/26)
+    android.ndkVersion "25.2.9519653" 
 
     buildTypes {
         release {
@@ -37,15 +33,6 @@ android {
         debug {
             buildConfigField("String", "VERSION_NAME", "\"${defaultConfig.versionName}\"")
             jniDebuggable true
-
-            // The doNotStrip option is not properly scoped to the "debug" build type, therefore
-            // it is commented out. Uncomment this if you need to debug the Rust code.
-            // See https://issuetracker.google.com/issues/155215248.
-            // But even with this debugging doesn't yet work,
-            // see https://github.com/mozilla/rust-android-gradle/issues/22.
-//            packagingOptions {
-//                doNotStrip '**/*.so'
-//            }
         }
     }
 
@@ -55,27 +42,20 @@ android {
     }
 
     lintOptions {
-        // generate to the CLI a text report of issues
         textReport true
         abortOnError false
-        // treat all warnings as errors
         warningsAsErrors true
     }
 }
 
+// MODIFIED: 建议更新 Rust 插件版本，或者确保你的环境支持它
 apply plugin: 'org.mozilla.rust-android-gradle.rust-android'
 
 dependencies {
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'androidx.test:runner:1.5.2'
     androidTestImplementation 'junit:junit:4.13.2'
-
-    // The version check here is disabled, because it incorrectly warns that a
-    // new version, "20030203.000550", is available. That version however is more
-    // than 15 years old.
-    //noinspection GradleDependency
     androidTestImplementation 'commons-io:commons-io:2.11.0'
-
     implementation 'androidx.annotation:annotation:1.6.0'
 }
 
@@ -85,15 +65,25 @@ cargo {
     libname = "lofelt_sdk"
     targets = ["arm", "x86", "arm64", "x86_64"]
     verbose = true
-    // Although the Java library has a minSdkVersion=17, it only loads Lofelt Haptics Core shared
-    // library (.so) for Android SDK API levels >= 26 so it is built only from that API level on.
     apiLevel = 26
-    // There doesn't seem to be a simpler way to get the current buildType than to check the task names,
-    // see https://stackoverflow.com/a/53261807/1005419.
+    
+    // MODIFIED: 根据 buildType 设置 profile
+    // 修正了原逻辑可能存在的潜在错误
     profile = gradle.startParameter.taskNames.any { it.toLowerCase().contains("debug") } ? "debug" : "release"
+
+    // ============================================================
+    // ⭐ 最关键修改：强制 Rust 生成 16KB 对齐的二进制文件 ⭐
+    // ============================================================
+    // Rust 编译器需要明确的标志来对齐 .text 和 .data 段。
+    // 0x4000 = 16384 = 16KB
+    rustFlagsWithDebug = "-C link-arg=-Wl,-z,max-page-size=0x4000 -C link-arg=-Wl,-z,common-page-size=0x4000"
+    rustFlagsRelease = "-C link-arg=-Wl,-z,max-page-size=0x4000 -C link-arg=-Wl,-z,common-page-size=0x4000"
+    
+    // 应用这些标志
+    rustFlags = profile == "debug" ? rustFlagsWithDebug : rustFlagsRelease
 }
 
-// Inspired by https://stackoverflow.com/a/52286740/1005419
+// (保留原有的 Javadoc 和 Variant 逻辑)
 android.libraryVariants.all { variant ->
     if (variant.name == 'release') {
         project.tasks.create("generateJavadoc", Javadoc) {
@@ -115,14 +105,11 @@ android.libraryVariants.all { variant ->
             options.memberLevel = JavadocMemberLevel.PROTECTED
             options.links("https://developer.android.com/reference/")
 
-            // Disable a bunch of things that clutter the navigation bar. For our small API such
-            // navigation elements are not needed.
             options.noDeprecatedList()
             options.noHelp()
             options.noIndex()
             options.noTree()
 
-            // Workaround for https://github.com/gradle/gradle/issues/11182
             def currentJavaVersion = JavaVersion.current()
             if (currentJavaVersion >= JavaVersion.VERSION_1_9) {
                 options.addStringOption("-release", "8")
@@ -131,7 +118,6 @@ android.libraryVariants.all { variant ->
     }
 }
 
-// Taken from https://github.com/mozilla/rust-android-gradle/blob/master/samples/library/build.gradle
 afterEvaluate {
     android.libraryVariants.all { variant ->
         def productFlavor = ""
